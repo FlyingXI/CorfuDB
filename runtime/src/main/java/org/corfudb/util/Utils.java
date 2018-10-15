@@ -16,6 +16,7 @@ import java.nio.ByteBuffer;
 import java.text.DecimalFormat;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +30,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.corfudb.protocols.logprotocol.LogEntry;
 import org.corfudb.protocols.logprotocol.MultiObjectSMREntry;
 import org.corfudb.protocols.wireprotocol.ILogData;
+import org.corfudb.protocols.wireprotocol.ReadResponse;
+import org.corfudb.protocols.wireprotocol.TailsResponse;
+import org.corfudb.protocols.wireprotocol.TokenResponse;
 import org.corfudb.recovery.FastObjectLoader;
 import org.corfudb.recovery.RecoveryUtils;
 import org.corfudb.runtime.CorfuRuntime;
@@ -44,6 +48,7 @@ import jdk.internal.org.objectweb.asm.tree.MethodNode;
 import jdk.internal.org.objectweb.asm.util.Printer;
 import jdk.internal.org.objectweb.asm.util.Textifier;
 import jdk.internal.org.objectweb.asm.util.TraceMethodVisitor;
+import org.corfudb.runtime.view.Tails;
 
 
 /**
@@ -465,6 +470,21 @@ public class Utils {
     }
 
 
+    static Tails getTails(Set<TailsResponse> responses) {
+        long globalTail = Address.NON_ADDRESS;
+        Map<UUID, Long> globalStreamTails = new HashMap<>();
+
+        for (TailsResponse res : responses) {
+            globalTail = Math.max(globalTail, res.getLogTail());
+
+            for (Map.Entry<UUID, Long> stream : res.getStreamTails().entrySet()) {
+                long streamTail = globalStreamTails.getOrDefault(stream.getKey(), Address.NON_ADDRESS);
+                globalStreamTails.put(stream.getKey(), Math.max(streamTail, stream.getValue()));
+            }
+        }
+        return new Tails(globalTail, globalStreamTails);
+    }
+
     /**
      * Fetches the max global log tail from the log unit cluster. This depends on the mode of
      * replication being used.
@@ -474,36 +494,45 @@ public class Utils {
      * @param layout  Latest layout to get clients to fetch tails.
      * @return The max global log tail obtained from the log unit servers.
      */
-    public static long getMaxGlobalTail(Layout layout, CorfuRuntime runtime) {
-        long maxTokenRequested = Address.NON_ADDRESS;
+    public static Tails getTails(Layout layout, CorfuRuntime runtime) {
+        Set<TailsResponse> luResponses = new HashSet<>();
+
         Layout.LayoutSegment segment = layout.getLatestSegment();
 
         // Query the tail of the head log unit in every stripe.
         if (segment.getReplicationMode().equals(Layout.ReplicationMode.CHAIN_REPLICATION)) {
             for (Layout.LayoutStripe stripe : segment.getStripes()) {
-                maxTokenRequested = Math.max(maxTokenRequested,
-                        CFUtils.getUninterruptibly(
-                                runtime.getLayoutView().getRuntimeLayout(layout)
-                                        .getLogUnitClient(stripe.getLogServers().get(0))
-                                        .getTail()));
 
+                TailsResponse res = CFUtils.getUninterruptibly(
+                        runtime.getLayoutView().getRuntimeLayout(layout)
+                                .getLogUnitClient(stripe.getLogServers().get(0))
+                                .getTail());
+                luResponses.add(res);
             }
         } else if (segment.getReplicationMode()
                 .equals(Layout.ReplicationMode.QUORUM_REPLICATION)) {
             for (Layout.LayoutStripe stripe : segment.getStripes()) {
-                CompletableFuture<Long>[] completableFutures = stripe.getLogServers()
+                CompletableFuture<TailsResponse>[] completableFutures = stripe.getLogServers()
                         .stream()
                         .map(s -> runtime.getLayoutView().getRuntimeLayout(layout)
                                 .getLogUnitClient(s).getTail())
                         .toArray(CompletableFuture[]::new);
-                QuorumFuturesFactory.CompositeFuture<Long> quorumFuture =
-                        QuorumFuturesFactory.getQuorumFuture(Comparator.naturalOrder(),
-                                completableFutures);
-                maxTokenRequested = Math.max(maxTokenRequested,
-                        CFUtils.getUninterruptibly(quorumFuture));
 
+                QuorumFuturesFactory.CompositeFuture<TailsResponse> quorumFuture =
+                        QuorumFuturesFactory.getQuorumFuture(new TailsResponseComparator(),
+                                completableFutures);
+                TailsResponse res = CFUtils.getUninterruptibly(quorumFuture);
+                luResponses.add(res);
             }
         }
-        return maxTokenRequested;
+        return getTails(luResponses);
+    }
+
+    static class TailsResponseComparator implements Comparator<TailsResponse> {
+        @Override
+        public int compare(TailsResponse o1, TailsResponse o2) {
+            // Do we need to compare the map too?
+            return Long.compare(o1.getLogTail(), o2.getLogTail());
+        }
     }
 }

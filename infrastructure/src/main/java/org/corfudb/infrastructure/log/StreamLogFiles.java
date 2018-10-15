@@ -85,12 +85,16 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
     public final String logDir;
     private final boolean noVerify;
     private final ServerContext serverContext;
-    private final AtomicLong globalTail = new AtomicLong(Address.NON_ADDRESS);
     private Map<String, SegmentHandle> writeChannels;
     private Set<FileChannel> channelsToSync;
     private MultiReadWriteLock segmentLocks = new MultiReadWriteLock();
+
+    //=================Log Metadata=================
+    // TODO(Maithem): move these to a thread-safe class
+    private final AtomicLong globalTail = new AtomicLong(Address.NON_ADDRESS);
     private long lastSegment;
     private volatile long startingAddress;
+    private Map<UUID, Long> streamTails;
 
     /**
      * Returns a file-based stream log object.
@@ -107,6 +111,7 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
 
         writeChannels = new ConcurrentHashMap();
         channelsToSync = new HashSet<>();
+        streamTails = new HashMap<>();
         this.noVerify = noVerify;
         this.serverContext = serverContext;
         verifyLogs();
@@ -119,6 +124,47 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
         // addresses that haven't been written
         if (Math.max(getGlobalTail(), 0L) < getTrimMark()) {
             syncTailSegment(getTrimMark() - 1);
+        }
+
+        // Initialize stream tails
+        initializeStreamTails();
+    }
+
+    private void initializeStreamTails() {
+        long firstSegment = 0;
+        long lastSegment = globalTail.get();
+
+        long start = System.currentTimeMillis();
+        for (long currentSegment = firstSegment; currentSegment <= lastSegment; currentSegment++) {
+            // TODO(Maithem): factor out getSegmentHandleForAddress to allow getting
+            // segments by segment number
+            SegmentHandle sh = getSegmentHandleForAddress(currentSegment * RECORDS_PER_LOG_FILE + 1);
+            for (Map.Entry<Long, AddressMetaData> record : sh.getKnownAddresses().entrySet()) {
+                LogData logEntry = read(record.getKey());
+                updateStreamTails(logEntry);
+            }
+            sh.close();
+            // don't close the last segment?
+        }
+
+        // clean writeChannels
+
+        long end = System.currentTimeMillis();
+        log.info("initializeStreamTails: took {} ms to load {} stream tails", end - start, streamTails.size());
+    }
+
+    private void updateStreamTails(List<LogData> entries) {
+        for (LogData entry : entries) {
+            for (Map.Entry<UUID, Long> backPointer : entry.getBackpointerMap().entrySet()) {
+                long tail = streamTails.get(backPointer.getKey());
+                streamTails.put(backPointer.getKey(), Math.max(tail, backPointer.getValue()));
+            }
+        }
+    }
+    private void updateStreamTails(LogData entry) {
+        for (Map.Entry<UUID, Long> backPointer : entry.getBackpointerMap().entrySet()) {
+            long tail = streamTails.get(backPointer.getKey());
+            streamTails.put(backPointer.getKey(), Math.max(tail, backPointer.getValue()));
         }
     }
 
@@ -1033,7 +1079,10 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
             allRecordsBuf.flip();
             safeWrite(sh.getWriteChannel(), allRecordsBuf);
             channelsToSync.add(sh.getWriteChannel());
+            // Sync the global and stream tail(s)
+            // TODO(Maithem): on ioexceptions the StreamLogFiles needs to be reinitialized
             syncTailSegment(entries.get(entries.size() - 1).getGlobalAddress());
+            updateStreamTails(entries);
         }
 
         return recordsMap;
@@ -1058,11 +1107,11 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
             // can overwrite the failed write.
 
             // Note that after rewinding the channel pointer, it is important to truncate
-            // any bytes that were written. This is required to avoid an ambigous case
+            // any bytes that were written. This is required to avoid an ambiguous case
             // where a subsequent write (after a failed write) succeeds but writes less
             // bytes than the partially written buffer. In that case, the log unit can't
-            // determine if the bytes correspund to a partially written buffer that needs
-            // to be ignored, or if the bytes corrrespond to a corrupted metadata field.
+            // determine if the bytes correspond to a partially written buffer that needs
+            // to be ignored, or if the bytes correspond to a corrupted metadata field.
             channel.position(prev);
             channel.truncate(prev);
             channel.force(true);
@@ -1092,6 +1141,7 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
             safeWrite(fh.getWriteChannel(), record);
             channelsToSync.add(fh.getWriteChannel());
             syncTailSegment(address);
+            updateStreamTails(entry);
         }
 
         return new AddressMetaData(metadata.getPayloadChecksum(), metadata.getLength(), channelOffset);

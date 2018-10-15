@@ -103,10 +103,6 @@ public class FastObjectLoader {
 
     @Setter
     @Getter
-    private boolean recoverSequencerMode;
-
-    @Setter
-    @Getter
     private boolean logHasNoCheckPoint = false;
 
     private boolean whiteList = false;
@@ -261,7 +257,7 @@ public class FastObjectLoader {
     }
 
     private void findAndSetLogTail() {
-        logTail = runtime.getAddressSpaceView().getLogTail();
+        logTail = runtime.getAddressSpaceView().getAllTails().getLogTail();
     }
 
     private void resetAddressProcessed() {
@@ -661,15 +657,6 @@ public class FastObjectLoader {
     }
 
     /**
-     * This method will only resurrect the stream tails. It is used
-     * to recover a sequencer.
-     */
-    private void recoverSequencer() {
-        log.info("recoverSequencer: Resurrecting the stream tails");
-        applyForEachAddress(this::updateStreamTails);
-    }
-
-    /**
      * This method will use the checkpoints and the entries
      * after checkpoints to resurrect the SMRMaps
      */
@@ -699,13 +686,7 @@ public class FastObjectLoader {
     public void loadMaps() {
         log.info("loadMaps: Starting to resurrect maps");
         initializeHeadAndTails();
-
-        if(recoverSequencerMode) {
-            recoverSequencer();
-        }
-        else {
-            recoverRuntime();
-        }
+        recoverRuntime();
 
         log.info("loadMaps[startAddress: {}, stopAddress (included): {}, addressProcessed: {}]",
                 logHead, logTail, addressProcessed);
