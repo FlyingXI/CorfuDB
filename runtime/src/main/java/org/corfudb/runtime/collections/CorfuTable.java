@@ -285,8 +285,8 @@ public class CorfuTable<K ,V> implements ICorfuMap<K, V> {
     /** Default constructor. Generates a table without any secondary indexes. */
     public CorfuTable() {
         this(IndexRegistry.empty());
-        log.trace("CorfuTable: Creating a table without secondary indexes! Secondary index lookup"
-            + " will DEGRADE to a full scan");
+        log.warn("CorfuTable: Creating a table without secondary indexes! Secondary index lookup"
+            + " will fail.");
     }
 
     /** {@inheritDoc} */
@@ -346,11 +346,16 @@ public class CorfuTable<K ,V> implements ICorfuMap<K, V> {
     <I extends Comparable<I>>
     Collection<Entry<K, V>> getByIndex(@Nonnull IndexName indexName, I indexKey) {
         String secondaryIndex = indexName.get();
-        Map<K, V> res = secondaryIndexes.get(secondaryIndex).get(indexKey);
+        try {
+            Map<K, V> res = secondaryIndexes.get(secondaryIndex).get(indexKey);
 
-        return res == null ?
-                Collections.emptySet():
-                new HashSet<>(res.entrySet());
+            return res == null ?
+                    Collections.emptySet() :
+                    new HashSet<>(res.entrySet());
+        } catch (NullPointerException e) {
+            log.error("CorfuTable: secondary index " + secondaryIndex + " does not exist for this table, cannot complete the get by index.");
+            throw new IllegalArgumentException("Secondary Index " + secondaryIndex + " is not defined.");
+        }
     }
 
     /**

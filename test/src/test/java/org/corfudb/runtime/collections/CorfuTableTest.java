@@ -1,16 +1,16 @@
 package org.corfudb.runtime.collections;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import com.google.common.reflect.TypeToken;
-import org.assertj.core.data.MapEntry;
-import org.corfudb.runtime.view.AbstractViewTest;
-import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.assertj.core.data.MapEntry;
+import org.corfudb.runtime.view.AbstractViewTest;
+import org.junit.Test;
 
 public class CorfuTableTest extends AbstractViewTest {
 
@@ -60,6 +60,22 @@ public class CorfuTableTest extends AbstractViewTest {
 
         assertThat(project(corfuTable.getByIndex(StringIndexer.BY_VALUE, "ab")))
                 .containsExactly("ab");
+    }
+
+    @Test (expected = IllegalArgumentException.class)
+    @SuppressWarnings("unchecked")
+    public void cannotLookupByIndexWhenIndexNotSpecified() {
+        CorfuTable<String, String>
+                corfuTable = getDefaultRuntime().getObjectsView().build()
+                .setTypeToken(new TypeToken<CorfuTable<String, String>>() {})
+                .setStreamName("test")
+                .open();
+
+        corfuTable.put("k1", "a");
+        corfuTable.put("k2", "ab");
+        corfuTable.put("k3", "b");
+
+        corfuTable.getByIndex(StringIndexer.BY_FIRST_LETTER, "a");
     }
 
     /**

@@ -3,21 +3,22 @@ package org.corfudb.runtime.object.transactions;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.ArrayList;
+import java.util.Random;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.corfudb.runtime.CorfuRuntime;
 import org.corfudb.runtime.clients.LogUnitClient;
+import org.corfudb.runtime.collections.CorfuTable;
 import org.corfudb.runtime.collections.ISMRMap;
 import org.corfudb.runtime.collections.SMRMap;
+import org.corfudb.runtime.collections.StringIndexer;
 import org.corfudb.runtime.exceptions.AbortCause;
 import org.corfudb.runtime.exceptions.AppendException;
 import org.corfudb.runtime.exceptions.TransactionAbortedException;
 import org.corfudb.runtime.view.stream.IStreamView;
 import org.junit.Test;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Random;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * These tests generate workloads with mixed reads/writes on multiple maps.
@@ -288,5 +289,21 @@ public class StreamTest extends AbstractTransactionsTest {
         scheduleInterleaved(NUM_THREADS, NUM_THREADS);
     }
 
+
+    @Test (expected = TransactionAbortedException.class)
+    public void checkTransactionAbortIfLookupByIndexWhenIndexNotSpecified() {
+        CorfuTable<String, String> map = instantiateCorfuObject(CorfuTable.class, "Test");
+
+        try {
+            TXBegin();
+            map.put("ak", "av");
+            map.getByIndex(StringIndexer.BY_FIRST_LETTER, "a");
+            TXEnd();
+        } catch (TransactionAbortedException tae) {
+            assertThat(tae.getAbortCause()).isEqualTo(AbortCause.UNDEFINED);
+            assertThat(tae.getCause().getClass()).isEqualTo(IllegalArgumentException.class);
+            throw tae;
+        }
+    }
 
 }
